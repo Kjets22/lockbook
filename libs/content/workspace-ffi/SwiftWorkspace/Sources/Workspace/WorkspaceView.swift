@@ -1,97 +1,131 @@
-import Foundation
-import SwiftUI
-import MetalKit
-import Combine
 import Bridge
+import Combine
+import Foundation
+import MetalKit
+import SwiftUI
 
 #if os(iOS)
-import GameController
+    import GameController
 
-public struct WorkspaceView: View, Equatable {
-    
-    let workspaceState: WorkspaceState
-    let coreHandle: UnsafeMutableRawPointer?
-    
-    @State var activeTabName = ""
-    
-    public init(_ workspaceState: WorkspaceState, _ coreHandle: UnsafeMutableRawPointer?) {
-        self.workspaceState = workspaceState
-        self.coreHandle = coreHandle
-    }
-    
-    public var body: some View {
-        UIWS(workspaceState, coreHandle)
-    }
-    
-    public static func == (lhs: WorkspaceView, rhs: WorkspaceView) -> Bool {
-        return true
-    }
-}
+    public struct WorkspaceView: View, Equatable {
 
-public struct UIWS: UIViewRepresentable {
-    @ObservedObject public var workspaceState: WorkspaceState
-    let coreHandle: UnsafeMutableRawPointer?
-    
-    @Environment(\.horizontalSizeClass) var horizontal
-    @Environment(\.verticalSizeClass) var vertical
-    
-    var openDoc: UUID? = nil
-    
-    static var inputManager: iOSMTKInputManager? = nil
-        
-    public init(_ workspaceState: WorkspaceState, _ coreHandle: UnsafeMutableRawPointer?) {
-        self.workspaceState = workspaceState
-        self.coreHandle = coreHandle
+        let workspaceState: WorkspaceState
+        let coreHandle: UnsafeMutableRawPointer?
+
+        @State var activeTabName = ""
+
+        public init(_ workspaceState: WorkspaceState, _ coreHandle: UnsafeMutableRawPointer?) {
+            self.workspaceState = workspaceState
+            self.coreHandle = coreHandle
+        }
+
+        public var body: some View {
+            UIWS(workspaceState, coreHandle)
+        }
+
+        public static func == (lhs: WorkspaceView, rhs: WorkspaceView) -> Bool {
+            return true
+        }
     }
 
-    public func makeUIView(context: Context) -> iOSMTKInputManager {
-        if Self.inputManager == nil {
-            Self.inputManager = iOSMTKInputManager(workspaceState, coreHandle)
+    public struct UIWS: UIViewRepresentable {
+        @ObservedObject public var workspaceState: WorkspaceState
+        let coreHandle: UnsafeMutableRawPointer?
+
+        @Environment(\.horizontalSizeClass) var horizontal
+        @Environment(\.verticalSizeClass) var vertical
+
+        var openDoc: UUID? = nil
+
+        static var inputManager: iOSMTKInputManager? = nil
+
+        public init(_ workspaceState: WorkspaceState, _ coreHandle: UnsafeMutableRawPointer?) {
+            self.workspaceState = workspaceState
+            self.coreHandle = coreHandle
         }
-        
-        return Self.inputManager!
+
+        public func makeUIView(context: Context) -> iOSMTKInputManager {
+            if Self.inputManager == nil {
+                Self.inputManager = iOSMTKInputManager(workspaceState, coreHandle)
+            }
+
+            return Self.inputManager!
+        }
+
+        public func updateUIView(_ uiView: iOSMTKInputManager, context: Context) {
+            workspaceState.showTabs = horizontal == .regular && vertical == .regular
+            if uiView.mtkView.showTabs != workspaceState.showTabs {
+                uiView.mtkView.showHideTabs(show: workspaceState.showTabs)
+            }
+
+            if let id = workspaceState.openDocRequested {
+                uiView.mtkView.openFile(id: id)
+                workspaceState.openDocRequested = nil
+            }
+
+            if workspaceState.closeAllTabsRequested {
+                workspaceState.closeAllTabsRequested = false
+                uiView.mtkView.closeAllTabs()
+            }
+
+            if workspaceState.currentTab.viewWrapperId() != uiView.currentTab.viewWrapperId()
+                || workspaceState.tabCount != uiView.tabCount
+            {
+                uiView.updateCurrentTab(
+                    newCurrentTab: workspaceState.currentTab, newTabCount: workspaceState.tabCount)
+            }
+
+            if workspaceState.shouldFocus {
+                workspaceState.shouldFocus = false
+                uiView.currentWrapper?.becomeFirstResponder()
+            }
+
+            if workspaceState.syncRequested {
+                workspaceState.syncRequested = false
+                uiView.mtkView.requestSync()
+            }
+
+            if workspaceState.fileOpCompleted != nil {
+                uiView.mtkView.fileOpCompleted(fileOp: workspaceState.fileOpCompleted!)
+                workspaceState.fileOpCompleted = nil
+            }
+
+            if workspaceState.closeActiveTab {
+                workspaceState.closeActiveTab = false
+                uiView.mtkView.closeActiveTab()
+                uiView.currentWrapper?.resignFirstResponder()
+            }
+        }
     }
-    
-    public func updateUIView(_ uiView: iOSMTKInputManager, context: Context) {
-        workspaceState.showTabs = horizontal == .regular && vertical == .regular
-        if uiView.mtkView.showTabs != workspaceState.showTabs {
-            uiView.mtkView.showHideTabs(show: workspaceState.showTabs)
+
+    public class iOSMTKInputManager: UIView, UIGestureRecognizerDelegate {
+        public var mtkView: iOSMTK
+
+        var currentWrapper: UIView? = nil
+        var currentTab: WorkspaceTab = .Welcome
+        var tabCount: Int = 0
+
+        init(_ workspaceState: WorkspaceState, _ coreHandle: UnsafeMutableRawPointer?) {
+            mtkView = iOSMTK()
+            mtkView.workspaceState = workspaceState
+            mtkView.setInitialContent(coreHandle)
+
+            super.init(frame: .infinite)
+
+            mtkView.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(mtkView)
+            NSLayoutConstraint.activate([
+                mtkView.topAnchor.constraint(equalTo: topAnchor),
+                mtkView.leftAnchor.constraint(equalTo: leftAnchor),
+                mtkView.rightAnchor.constraint(equalTo: rightAnchor),
+                mtkView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            ])
         }
-        
-        if let id = workspaceState.openDocRequested {
-            uiView.mtkView.openFile(id: id)
-            workspaceState.openDocRequested = nil
+
+        required init?(coder aDecoder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
         }
-        
-        if workspaceState.closeAllTabsRequested {
-            workspaceState.closeAllTabsRequested = false
-            uiView.mtkView.closeAllTabs()
-        }
-        
-        if workspaceState.currentTab.viewWrapperId() != uiView.currentTab.viewWrapperId() || workspaceState.tabCount != uiView.tabCount {
-            uiView.updateCurrentTab(newCurrentTab: workspaceState.currentTab, newTabCount: workspaceState.tabCount)
-        }
-        
-        if workspaceState.shouldFocus {
-            workspaceState.shouldFocus = false
-            uiView.currentWrapper?.becomeFirstResponder()
-        }
-        
-        if workspaceState.syncRequested {
-            workspaceState.syncRequested = false
-            uiView.mtkView.requestSync()
-        }
-        
-        if workspaceState.fileOpCompleted != nil {
-            uiView.mtkView.fileOpCompleted(fileOp: workspaceState.fileOpCompleted!)
-            workspaceState.fileOpCompleted = nil
-        }
-        
-        if workspaceState.closeActiveTab {
-            workspaceState.closeActiveTab = false
-            uiView.mtkView.closeActiveTab()
-            uiView.currentWrapper?.resignFirstResponder()
-        }
+
     }
 }
 
@@ -166,87 +200,84 @@ public class iOSMTKInputManager: UIView, UIGestureRecognizerDelegate {
                     
                     if GCKeyboard.coalesced != nil {
                         textWrapper.becomeFirstResponder()
+
                     }
                 }
             }
         }
     }
-}
 
 #else
-public struct WorkspaceView: View, Equatable {
-    @FocusState var focused: Bool
-    @ObservedObject var workspaceState: WorkspaceState
-    
-    let nsEditorView: NSWS
-    
-    public init(_ workspaceState: WorkspaceState, _ coreHandle: UnsafeMutableRawPointer?) {
-        self.workspaceState = workspaceState
-        nsEditorView = NSWS(workspaceState, coreHandle)
-    }
-    
-    public var body: some View {
-        nsEditorView
-            .focused($focused)
-            .onAppear {
-                focused = true
-            }
-            .onChange(of: workspaceState.shouldFocus, perform: { newValue in
-                if newValue {
+    public struct WorkspaceView: View, Equatable {
+        @FocusState var focused: Bool
+        @ObservedObject var workspaceState: WorkspaceState
+
+        let nsEditorView: NSWS
+
+        public init(_ workspaceState: WorkspaceState, _ coreHandle: UnsafeMutableRawPointer?) {
+            self.workspaceState = workspaceState
+            nsEditorView = NSWS(workspaceState, coreHandle)
+        }
+
+        public var body: some View {
+            nsEditorView
+                .focused($focused)
+                .onAppear {
                     focused = true
                 }
-            })
+                .onChange(
+                    of: workspaceState.shouldFocus,
+                    perform: { newValue in
+                        if newValue {
+                            focused = true
+                        }
+                    })
 
-    }
-    
-    public static func == (lhs: WorkspaceView, rhs: WorkspaceView) -> Bool {
-        true
-    }
-}
+        }
 
-public struct NSWS: NSViewRepresentable {
-    
-    @ObservedObject public var workspaceState: WorkspaceState
-    let coreHandle: UnsafeMutableRawPointer?
-    
-    public init(_ workspaceState: WorkspaceState, _ coreHandle: UnsafeMutableRawPointer?) {
-        self.workspaceState = workspaceState
-        self.coreHandle = coreHandle
-    }
-    
-    public func makeNSView(context: NSViewRepresentableContext<NSWS>) -> MacMTK {
-        let mtkView = MacMTK()
-        mtkView.workspaceState = workspaceState
-        mtkView.setInitialContent(coreHandle)
-        
-        return mtkView
-    }
-    
-    public func updateNSView(_ nsView: MacMTK, context: NSViewRepresentableContext<NSWS>) {
-        if let id = workspaceState.openDocRequested {
-            nsView.openFile(id: id)
-            workspaceState.openDocRequested = nil
-        }
-        
-        if workspaceState.shouldFocus {
-            // todo?
-            workspaceState.shouldFocus = false
-        }
-        
-        if workspaceState.syncRequested {
-            workspaceState.syncRequested = false
-            nsView.requestSync()
-        }
-        
-        if workspaceState.fileOpCompleted != nil {
-            nsView.fileOpCompleted(fileOp: workspaceState.fileOpCompleted!)
-            workspaceState.fileOpCompleted = nil
+        public static func == (lhs: WorkspaceView, rhs: WorkspaceView) -> Bool {
+            true
         }
     }
-}
+
+    public struct NSWS: NSViewRepresentable {
+
+        @ObservedObject public var workspaceState: WorkspaceState
+        let coreHandle: UnsafeMutableRawPointer?
+
+        public init(_ workspaceState: WorkspaceState, _ coreHandle: UnsafeMutableRawPointer?) {
+            self.workspaceState = workspaceState
+            self.coreHandle = coreHandle
+        }
+
+        public func makeNSView(context: NSViewRepresentableContext<NSWS>) -> MacMTK {
+            let mtkView = MacMTK()
+            mtkView.workspaceState = workspaceState
+            mtkView.setInitialContent(coreHandle)
+
+            return mtkView
+        }
+
+        public func updateNSView(_ nsView: MacMTK, context: NSViewRepresentableContext<NSWS>) {
+            if let id = workspaceState.openDocRequested {
+                nsView.openFile(id: id)
+                workspaceState.openDocRequested = nil
+            }
+
+            if workspaceState.shouldFocus {
+                // todo?
+                workspaceState.shouldFocus = false
+            }
+
+            if workspaceState.syncRequested {
+                workspaceState.syncRequested = false
+                nsView.requestSync()
+            }
+
+            if workspaceState.fileOpCompleted != nil {
+                nsView.fileOpCompleted(fileOp: workspaceState.fileOpCompleted!)
+                workspaceState.fileOpCompleted = nil
+            }
+        }
+    }
 #endif
-
-
-
-
-
